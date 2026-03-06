@@ -1,0 +1,41 @@
+================================================================================
+BUCKET-LEVEL SUMMARY (2015-2025, rw_3_6_9_12)
+================================================================================
+
+SCENARIO 1: No Absolute Filter (none)
+--------------------------------------
+Overall: Sharpe=1.18, Turnover=18.49%
+Gap Config: Bonds:2, Commodities:3, Emerging_Markets:0, Intl_developed:0, US_equities:0, US_small_mid_cap:1
+
+Bucket                 | Gap | CAGR   | Sharpe | MaxDD
+-------|-----|--------|--------|--------
+Bonds                  |  2  |  9.06% |  0.78  | -13.86%
+Commodities            |  3  | 14.18% |  1.00  | -18.10%
+Emerging_Markets       |  0  |  9.07% |  0.56  | -34.61%
+Intl_developed         |  0  |  9.27% |  0.65  | -34.73%
+US_equities            |  0  | 17.54% |  1.07  | -25.59%
+US_small_mid_cap       |  1  | 14.38% |  0.78  | -20.88%
+
+
+SCENARIO 2: Absolute Filter (ret_and @ 1%)
+--------------------------------------------
+Overall: Sharpe=1.42, Turnover=11.76%
+Gap Config: Uniform gap=2 (all buckets)
+
+Bucket                 | Gap | CAGR   | Sharpe | MaxDD
+-------|-----|--------|--------|--------
+Bonds                  |  2  |  9.93% |  0.86  | -9.81%
+Commodities            |  2  |  9.37% |  0.83  | -21.46%
+Emerging_Markets       |  2  |  8.74% |  0.95  | -13.84%
+Intl_developed         |  2  |  7.15% |  0.90  | -13.00%
+US_equities            |  2  | 14.81% |  1.01  | -23.33%
+US_small_mid_cap       |  0  |  9.90% |  0.75  | -15.49%
+
+
+NOTES:
+------
+- Turnover shown is portfolio-level (overall rebalancing frequency).
+- Scenario 2 (ret_and @ 1%) has better Sharpe (1.42 vs 1.18) and lower turnover (11.76% vs 18.49%).
+- Scenario 2 uses simpler uniform gap=2 rule (no per-bucket variation needed).
+- Scenario 1 per-bucket gaps show more aggressive gaps (0-3) with mixed results.
+- Scenario 2 with ret_and filter reduces max drawdowns across all buckets vs no filter.

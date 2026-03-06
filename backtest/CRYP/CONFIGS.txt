@@ -1,0 +1,5 @@
+MA-entry | MA-exit | MA-exit-buffer | DON-entry-buffer | DON-high | DON-low
+
+N/A 		25 		0.005 		    0.0075 			   46	      	      38		DONCHIAN MA
+
+30 		32		0.006		    0.0015			   40		     45		AND MA			   

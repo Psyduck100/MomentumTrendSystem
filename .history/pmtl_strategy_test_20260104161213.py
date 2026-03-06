@@ -1,0 +1,183 @@
+"""PMTL Strategy: GLD with 50/100/200-day trading day MA filters vs 12M return filter.
+
+Compare six strategies:
+1. GLD 50-day TRADING MA filter: hold GLD if above 50 trading-day MA, else IEF
+2. GLD 100-day TRADING MA filter: hold GLD if above 100 trading-day MA, else IEF
+3. GLD 200-day TRADING MA filter: hold GLD if above 200 trading-day MA, else IEF
+4. GLD 6M return filter: hold GLD if 6M > 0, else IEF
+5. GLD 12M return filter: hold GLD if 12M > 0, else IEF
+6. GLD benchmark: hold GLD always
+
+Note: 50 trading days ≈ 72 cal days, 100 trading days ≈ 145 cal days, 200 trading days ≈ 290 cal days
+"""
+
+from __future__ import annotations
+import pandas as pd
+import yfinance as yf
+from pathlib import Path
+from enum import Enum
+
+from momentum_program.backtest.metrics import compute_metrics
+
+TICKERS = ["GLD", "IEF"]
+START_DATE = "2005-01-01"
+END_DATE = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+# Trading day conversions: 252 trading days per year / 365 calendar days
+TRADING_TO_CALENDAR = 365 / 252
+
+class FilterType(Enum):
+    """Enum for filter types."""
+    MA_50 = ("50TMA", int(50 * TRADING_TO_CALENDAR))
+    MA_100 = ("100TMA", int(100 * TRADING_TO_CALENDAR))
+    MA_200 = ("200TMA", int(200 * TRADING_TO_CALENDAR))
+
+BACKTEST_CACHE = Path("backtest_cache")
+BACKTEST_CACHE.mkdir(exist_ok=True)
+
+def download_prices(tickers: list[str], end_date: str = END_DATE) -> pd.DataFrame:
+    """Download daily prices."""
+    print(f"Downloading {len(tickers)} tickers from {START_DATE} to {end_date}...")
+    data = yf.download(tickers, start=START_DATE, end=end_date, progress=False)
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data = data.swaplevel(0, 1, axis=1).sort_index(axis=1)
+        prices = pd.DataFrame()
+        for ticker in tickers:
+            if ticker in data.columns.get_level_values(0):
+                sub = data[ticker]
+                if "Adj Close" in sub.columns:
+                    prices[ticker] = sub["Adj Close"]
+                elif "Close" in sub.columns:
+                    prices[ticker] = sub["Close"]
+    else:
+        prices = pd.DataFrame({tickers[0]: data["Adj Close"]})
+
+    return prices
+
+def backtest_moving_average(prices: pd.DataFrame, filter_type: FilterType) -> dict:
+    """Backtest: GLD above moving average -> GLD, else IEF.
+    
+    Args:
+        prices: DataFrame with GLD and IEF prices
+        filter_type: FilterType enum specifying which MA to use
+    
+    Returns:
+        Dictionary with 'returns' key containing return series
+    """
+    filter_name, calendar_window = filter_type.value
+    ma_column = f"GLD_{filter_name}"
+    prices[ma_column] = prices["GLD"].rolling(window=calendar_window).mean()
+    monthly = prices.resample("ME").last()
+    
+    positions = []
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        gld_price = monthly.iloc[i]["GLD"]
+        gld_ma = monthly.iloc[i][ma_column]
+        
+        position = "GLD" if pd.notna(gld_ma) and gld_price > gld_ma else "IEF"
+        positions.append(position)
+        
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i][position]
+            price_next = monthly.iloc[i + 1][position]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def backtest_12m_return(prices: pd.DataFrame) -> dict:
+    """Backtest: GLD 12M return > 0 -> GLD, else IEF."""
+    monthly = prices.resample("ME").last()
+    
+    positions = []
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        if i >= 12:
+            gld_12m = (monthly.iloc[i]["GLD"] - monthly.iloc[i-12]["GLD"]) / monthly.iloc[i-12]["GLD"]
+        else:
+            gld_12m = 0
+        
+        if gld_12m > 0:
+            position = "GLD"
+        else:
+            position = "IEF"
+        
+        positions.append(position)
+        
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i][position]
+            price_next = monthly.iloc[i + 1][position]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def backtest_gld_only(prices: pd.DataFrame) -> dict:
+    """Benchmark: hold GLD always."""
+    monthly = prices.resample("ME").last()
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i]["GLD"]
+            price_next = monthly.iloc[i + 1]["GLD"]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def main():
+    prices = download_prices(TICKERS)
+    
+    # Run all strategies
+    ma50_result = backtest_moving_average(prices.copy(), FilterType.MA_50)
+    ma100_result = backtest_moving_average(prices.copy(), FilterType.MA_100)
+    ma200_result = backtest_moving_average(prices.copy(), FilterType.MA_200)
+    ret12m_result = backtest_12m_return(prices)
+    gld_result = backtest_gld_only(prices)
+    
+    ma50_ret = ma50_result["returns"]
+    ma100_ret = ma100_result["returns"]
+    ma200_ret = ma200_result["returns"]
+    ret12m_ret = ret12m_result["returns"]
+    gld_ret = gld_result["returns"]
+    
+    if all(len(r) > 0 for r in [ma50_ret, ma100_ret, ma200_ret, ret12m_ret, gld_ret]):
+        ma50_metrics = compute_metrics(ma50_ret)
+        ma100_metrics = compute_metrics(ma100_ret)
+        ma200_metrics = compute_metrics(ma200_ret)
+        ret12m_metrics = compute_metrics(ret12m_ret)
+        gld_metrics = compute_metrics(gld_ret)
+        
+        # Get calendar windows for display
+        cal_50 = FilterType.MA_50.value[1]
+        cal_100 = FilterType.MA_100.value[1]
+        cal_200 = FilterType.MA_200.value[1]
+        
+        print("\n" + "="*160)
+        print(f"GLD FILTER COMPARISON ({ma50_ret.index[0].strftime('%Y-%m-%d')} to {ma50_ret.index[-1].strftime('%Y-%m-%d')})")
+        print(f"Trading days: 50~{cal_50}cal, 100~{cal_100}cal, 200~{cal_200}cal")
+        print("="*160)
+        print(f"{'Metric':<12} {'50TMA':<18} {'100TMA':<18} {'200TMA':<18} {'12M Ret':<18} {'GLD Bench':<18}")
+        print("-"*160)
+        
+        print(f"{'CAGR':<12} {ma50_metrics['cagr']:>16.2%} {ma100_metrics['cagr']:>16.2%} {ma200_metrics['cagr']:>16.2%} {ret12m_metrics['cagr']:>16.2%} {gld_metrics['cagr']:>16.2%}")
+        print(f"{'Sharpe':<12} {ma50_metrics['sharpe']:>16.3f} {ma100_metrics['sharpe']:>16.3f} {ma200_metrics['sharpe']:>16.3f} {ret12m_metrics['sharpe']:>16.3f} {gld_metrics['sharpe']:>16.3f}")
+        print(f"{'Max DD':<12} {ma50_metrics['max_drawdown']:>16.2%} {ma100_metrics['max_drawdown']:>16.2%} {ma200_metrics['max_drawdown']:>16.2%} {ret12m_metrics['max_drawdown']:>16.2%} {gld_metrics['max_drawdown']:>16.2%}")
+        print("="*160)
+        
+        print("\nVs GLD Benchmark:")
+        print(f"  50TMA:    {ma50_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ma50_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+        print(f"  100TMA:   {ma100_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ma100_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+        print(f"  200TMA:   {ma200_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ma200_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+        print(f"  12M Ret:  {ret12m_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ret12m_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,137 @@
+# Backtest Guide
+
+This folder contains modular backtest runners for each live strategy.
+
+## What was verified
+
+The backtests are configured to run over the **maximal practical period** allowed by their required assets.
+
+Verified first-available dates (`yfinance`, `period=max`):
+
+- `BTC-USD`: 2014-09-17
+- `GLD`: 2004-11-18
+- `SPY`: 1993-01-29
+- `QQQ`: 1999-03-10
+- `VTI`: 2001-06-15
+- `IWM`: 2000-05-26
+- `IEF`: 2002-07-30
+- `XAR`: 2011-09-29
+
+Verified effective windows from current runners:
+
+- **CRYP**: 2014-09-17 → current
+- **PMTL**: 2004-11-18 → current
+- **USEQ**: 2002-07-31 → current
+- **SECTOR170**: 2011-09-29 → current
+
+Why these starts make sense:
+
+- `CRYP` depends on BTC history.
+- `PMTL` depends on GLD history (this is the binding asset).
+- `USEQ` uses `IEF` as defensive; this binds the start.
+- `SECTOR170` uses `XAR`; this binds the start.
+
+## Strategy runners
+
+- `backtest/CRYP/run_backtest.py`
+- `backtest/PMTL/run_backtest.py`
+- `backtest/USEQ/run_backtest.py`
+- `backtest/SECTOR170/run_backtest.py`
+
+Shared metric utilities:
+
+- `backtest/common/metrics.py`
+
+## Metrics by strategy
+
+### CRYP
+
+Reports standalone trading metrics (no SPY comparison):
+
+- CAGR
+- CAGR in position
+- Sharpe
+- Sortino
+- Volatility
+- Max drawdown
+- Total return
+- Time in position
+
+### PMTL
+
+Reports standalone layered-strategy metrics (no SPY comparison):
+
+- CAGR
+- CAGR in position
+- CAGR in non-bull sleeve
+- Sharpe
+- Sortino
+- Volatility
+- Max drawdown
+- Total return
+- Time in position
+
+### USEQ
+
+Reports absolute and relative metrics vs benchmark (`SPY` by default):
+
+- CAGR
+- CAGR in position
+- Sharpe
+- Sortino
+- Volatility
+- Max drawdown
+- Total return
+- Time in position
+- Information ratio
+- Active return
+
+### SECTOR170
+
+Reports absolute and relative metrics vs benchmark (`SPY` by default):
+
+- CAGR
+- CAGR in position
+- Sharpe
+- Sortino
+- Volatility
+- Max drawdown
+- Total return
+- Time in position
+- Information ratio
+- Active return
+- Hold concentration
+
+## How to run
+
+From workspace root:
+
+```powershell
+pipenv run python backtest/CRYP/run_backtest.py
+pipenv run python backtest/PMTL/run_backtest.py
+pipenv run python backtest/USEQ/run_backtest.py
+pipenv run python backtest/SECTOR170/run_backtest.py
+```
+
+Or with the local venv interpreter:
+
+```powershell
+.venv/Scripts/python.exe backtest/CRYP/run_backtest.py
+.venv/Scripts/python.exe backtest/PMTL/run_backtest.py
+.venv/Scripts/python.exe backtest/USEQ/run_backtest.py
+.venv/Scripts/python.exe backtest/SECTOR170/run_backtest.py
+```
+
+## Configuration notes
+
+Each runner has a local `BacktestConfig` dataclass at the top of the file.
+
+Common fields:
+
+- universe
+- start date
+- benchmark (where applicable)
+- transaction costs
+- lookback (where applicable)
+
+For `SECTOR170`, the strategy default lookback is set to **175 trading days** in `strategy/SECTOR170.py` and mirrored in `backtest/SECTOR170/run_backtest.py`.

@@ -1,0 +1,229 @@
+"""
+PMTL REFACTORED - QUICK REFERENCE
+
+TL;DR: To run different tests, just edit ONE FILE and run pmtl_runner.py
+"""
+
+# ============================================================================
+# CHANGING FALLBACK (Cash → TB3MS → IEF)
+# ============================================================================
+# File: pmtl_config.py (last line, change ACTIVE_CONFIG)
+
+# CASH (0% return)
+ACTIVE_CONFIG = CASH_ONLY_CONFIG
+
+# TB3MS (3-month T-Bills)
+ACTIVE_CONFIG = TBILLS_CONFIG
+
+# IEF (Intermediate Bonds)
+ACTIVE_CONFIG = IEF_CONFIG
+
+# Custom fallback (any ticker from yfinance)
+ACTIVE_CONFIG = BacktestConfig(
+    fallback_type=FallbackType.SPY,  # or TLT, AGG, etc.
+    fallback_ticker="SPY",
+    windows=WindowConfig(start_window=100, end_window=200, step=10),
+    output_prefix="pmtl_spy"
+)
+
+# Then run:
+# $ cd c:\Users\roger\Stocks\MomentumProgram
+# $ .venv/Scripts/python.exe pmtl_runner.py
+
+
+# ============================================================================
+# CHANGING WINDOW RANGE
+# ============================================================================
+# File: pmtl_config.py (find ACTIVE_CONFIG or create new one)
+
+# Standard: 100-200 days in 10-day increments
+windows=WindowConfig(start_window=100, end_window=200, step=10)
+
+# Fine: 95-105 days in 1-day increments (fine-tune around 100)
+windows=WindowConfig(start_window=95, end_window=105, step=1)
+
+# Coarse: Quick test 100-150
+windows=WindowConfig(start_window=100, end_window=150, step=10)
+
+# EMA only (skip SMA)
+windows=WindowConfig(start_window=100, end_window=200, step=10, use_sma=False)
+
+# SMA only (skip EMA)
+windows=WindowConfig(start_window=100, end_window=200, step=10, use_ema=False)
+
+
+# ============================================================================
+# CHANGING DATE RANGE
+# ============================================================================
+# File: pmtl_config.py (create BacktestConfig with custom DateConfig)
+
+# Full history 2005-2025
+dates=DateConfig(start_date="2005-01-01", end_date="2025-12-31")
+
+# Recent years 2020-2025
+dates=DateConfig(start_date="2020-01-01", end_date="2025-12-31")
+
+# Crisis period 2008-2009
+dates=DateConfig(start_date="2008-01-01", end_date="2009-12-31")
+
+# Single year 2022
+dates=DateConfig(start_date="2022-01-01", end_date="2022-12-31")
+
+
+# ============================================================================
+# CHANGING PRIMARY METRIC (for sorting results)
+# ============================================================================
+# File: pmtl_config.py (set primary_metric in BacktestConfig)
+
+# Maximize CAGR (default)
+primary_metric=MetricType.CAGR
+
+# Maximize Sharpe Ratio
+primary_metric=MetricType.SHARPE
+
+# Minimize drawdown
+primary_metric=MetricType.MAX_DRAWDOWN
+
+
+# ============================================================================
+# PRESET CONFIGURATIONS (ready to use)
+# ============================================================================
+
+# pmtl_config.py has these pre-built:
+
+CASH_ONLY_CONFIG          # Cash fallback, standard windows
+TBILLS_CONFIG             # TB3MS fallback, standard windows
+IEF_CONFIG                # IEF fallback, standard windows
+QUICK_TEST_CONFIG         # Cash, windows 100-130 for fast testing
+FINE_SWEEP_CONFIG         # Cash, windows 80-180 in 5-day steps
+
+
+# ============================================================================
+# COMMON TEST SCENARIOS
+# ============================================================================
+
+# Scenario 1: Compare fallbacks
+"""
+Run 3 times with different ACTIVE_CONFIG:
+1. CASH_ONLY_CONFIG → pmtl_cash_results.csv
+2. TBILLS_CONFIG → pmtl_tbills_results.csv  
+3. IEF_CONFIG → pmtl_ief_results.csv
+Compare the results!
+"""
+
+# Scenario 2: Optimize window for cash
+"""
+1. QUICK_TEST_CONFIG (100-130 range)
+2. Find best window, say 105
+3. FINE_SWEEP_CONFIG (100-110 in 1-day steps)
+4. Find optimal window, say 103
+5. Create final config with window=103
+"""
+
+# Scenario 3: Period analysis
+"""
+Test same strategy in different periods:
+1. Set dates to 2005-2008 (bull market)
+2. Set dates to 2008-2009 (crisis)
+3. Set dates to 2009-2020 (recovery)
+4. Set dates to 2020-2025 (post-pandemic)
+Compare to understand regime dependence
+"""
+
+# Scenario 4: Test new fallback
+"""
+Want to test TLT (20+ year bonds)?
+1. Create BacktestConfig with fallback_ticker="TLT"
+2. Run it
+3. Compare with other fallbacks
+"""
+
+
+# ============================================================================
+# FILE STRUCTURE
+# ============================================================================
+
+pmtl_config.py               ← Edit this to change tests
+pmtl_fallback_strategies.py  ← Add new fallback types here
+pmtl_backtest_engine.py      ← Core logic (don't modify)
+pmtl_runner.py               ← Main runner (don't modify)
+
+PMTL_USAGE_GUIDE.py          ← Full documentation
+PMTL_QUICK_REFERENCE.py      ← This file
+
+
+# ============================================================================
+# OUTPUTS
+# ============================================================================
+
+pmtl_cash_results.csv              ← CAGR, Sharpe, MaxDD for all windows
+pmtl_cash_annual_returns.csv       ← Year-by-year returns for each strategy
+pmtl_tbills_results.csv
+pmtl_tbills_annual_returns.csv
+pmtl_ief_results.csv
+pmtl_ief_annual_returns.csv
+etc.
+
+Format:
+  results.csv: type, window, cagr, sharpe, max_drawdown (sorted by CAGR)
+  annual_returns.csv: years as columns, strategies as rows
+
+
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+
+Error: KeyError or no data loaded
+→ Check start_date/end_date are valid
+
+Error: TB3MS file not found
+→ Ensure CSVs/TB3MS.csv exists
+→ Or provide fallback_csv path explicitly
+
+Results are 0%
+→ Check DateConfig dates match available data
+→ Check Fallback type is correct
+
+Want to skip SMA or EMA
+→ Set use_sma=False or use_ema=False in WindowConfig
+
+Want weekly instead of monthly
+→ Modify DateConfig.frequency="W" (not tested, may need other changes)
+
+
+# ============================================================================
+# ADVANCED: ADD NEW FALLBACK TYPE
+# ============================================================================
+
+1. pmtl_fallback_strategies.py - Add new class:
+
+class MyFallback(FallbackStrategy):
+    def get_monthly_returns(self, monthly_dates):
+        # Your logic here
+        return pd.Series(returns, index=monthly_dates)
+    
+    @property
+    def name(self):
+        return "MY_FALLBACK"
+
+2. pmtl_config.py - Add to FallbackType enum:
+
+class FallbackType(Enum):
+    MY_FALLBACK = "myfallback"
+
+3. pmtl_config.py - Update get_fallback_strategy():
+
+elif fallback_type == "myfallback":
+    return MyFallback(start_date, end_date)
+
+4. Create preset config:
+
+MY_FALLBACK_CONFIG = BacktestConfig(
+    fallback_type=FallbackType.MY_FALLBACK,
+    ...
+)
+
+5. Run it:
+
+ACTIVE_CONFIG = MY_FALLBACK_CONFIG
+python pmtl_runner.py

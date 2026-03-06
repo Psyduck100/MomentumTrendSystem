@@ -1,0 +1,448 @@
+import pandas as pd
+import yfinance as yf
+import numpy as np
+import time
+from datetime import datetime
+from pathlib import Path
+import hashlib
+
+from momentum_program.analytics.constants import (
+    SCORE_MODE_12M_MINUS_1M,
+    SCORE_MODE_BLEND_6_12,
+    SCORE_MODE_RW_3_6_9_12,
+)
+
+
+def backtest_momentum(
+    tickers: list[str],
+    bucket_map: dict[str, str],
+    start_date: str,
+    end_date: str,
+    top_n_per_bucket: int = 1,
+    lookback_long: int = 6,
+    lookback_short: int = 1,
+    cache_dir: Path = Path("backtest_cache"),
+    slippage_bps: float = 3.0,
+    expense_ratio: float = 0.0001,
+    vol_adjusted: bool = False,
+    vol_lookback: int = 6,
+    market_filter: bool = False,
+    market_ticker: str = "SPY",
+    defensive_bucket: str = "Bonds",
+    market_threshold: float = 0.0,
+    rank_gap_threshold: int | dict[str, int] = 0,
+    score_mode: str = SCORE_MODE_12M_MINUS_1M,
+    abs_filter_mode: str = "none",  # options: none, ret_6m, ret_12m, ret_and, ret_blend
+    abs_filter_band: float = 0.0,  # hysteresis band (e.g., 0.01 = require >1%)
+    abs_filter_cash_annual: float = 0.04,  # cash/T-bill proxy when filtered
+) -> dict:
+    """
+    Run a monthly rebalancing momentum backtest by bucket.
+
+    Args:
+        tickers: List of ETF symbols.
+        bucket_map: Dict mapping symbol -> bucket name.
+        start_date: Start date (YYYY-MM-DD).
+        end_date: End date (YYYY-MM-DD).
+        top_n_per_bucket: Number of top picks per bucket each month.
+        lookback_long: Long lookback window in months (used only for legacy momentum mode).
+        lookback_short: Short lookback window in months (used only for legacy momentum mode).
+        cache_dir: Directory to cache downloaded data.
+        slippage_bps: Trading slippage in basis points (default 3 bps per trade).
+        expense_ratio: Annual expense ratio drag (default 0.01% annualized).
+        vol_adjusted: Use volatility-adjusted momentum (score / volatility).
+        vol_lookback: Months of data for rolling volatility calculation (default 6).
+        market_filter: Apply absolute momentum filter (dual momentum defense).
+        market_ticker: Market index to check for absolute momentum (default SPY).
+        defensive_bucket: Bucket to use when market momentum is negative (default Bonds).
+        market_threshold: Minimum 12M return to stay risk-on (e.g., 0.0 for >0%, -0.03 for >-3%).
+        rank_gap_threshold: Only rotate if new leader beats current holding by this many ranks (reduces turnover).
+                           Can be an int (same for all buckets) or dict[bucket_name, int] for per-bucket gaps.
+        score_mode: Momentum formula to use. Options:
+            - SCORE_MODE_12M_MINUS_1M (default): 12M return minus 1M return.
+            - SCORE_MODE_BLEND_6_12: 50/50 blend of 6M and 12M returns.
+            - SCORE_MODE_RW_3_6_9_12: Recency-weighted returns (3M/6M/9M/12M weighted 40/20/20/20).
+        abs_filter_mode: Absolute momentum filter applied per bucket after ranking. If filter fails, bucket goes to cash.
+            - none: disabled
+            - ret_6m: 6M return > band
+            - ret_12m: 12M return > band
+            - ret_and: both 12M > band AND 6M > band
+            - ret_blend: 0.6*12M + 0.5*6M > band
+        abs_filter_band: Required margin above zero (e.g., 0.01 = need >1%).
+        abs_filter_cash_annual: Annual cash rate when in defensive (e.g., 0.04 = 4%/yr).
+
+    Returns:
+        Dict with per-bucket and overall results.
+    """
+    cache_dir.mkdir(exist_ok=True)
+
+    # Use ticker fingerprint in cache file name so adding/removing symbols busts the cache
+    ticker_fingerprint = hashlib.md5(
+        ",".join(sorted(tickers)).encode("utf-8")
+    ).hexdigest()[:10]
+    cache_file = cache_dir / f"price_data_{start_date}_{end_date}_{ticker_fingerprint}.csv"
+
+    def _download_prices(symbols: list[str]) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        chunk_size = 25
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i : i + chunk_size]
+            print(
+                f"Downloading {len(chunk)} tickers ({chunk[0]}..{chunk[-1]}) from {start_date} to {end_date}..."
+            )
+            df_chunk = pd.DataFrame()
+            for attempt in range(2):
+                try:
+                    df_chunk = yf.download(
+                        chunk, start=start_date, end=end_date, progress=False
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if attempt == 0:
+                        print(
+                            f"  Error for chunk starting {chunk[0]} ({exc}); retrying after 5s"
+                        )
+                        time.sleep(5)
+                        continue
+                    print(f"  Failed chunk starting {chunk[0]} ({exc}); skipping")
+                    df_chunk = pd.DataFrame()
+                if df_chunk.empty and attempt == 0:
+                    print(
+                        f"  Empty response for chunk starting {chunk[0]}; retrying after 5s"
+                    )
+                    time.sleep(5)
+                    continue
+                break
+
+            if df_chunk.empty:
+                continue
+
+            if isinstance(df_chunk.columns, pd.MultiIndex):
+                lvl0 = df_chunk.columns.get_level_values(0)
+                if "Adj Close" in lvl0:
+                    df_chunk = df_chunk["Adj Close"]
+                elif "Close" in lvl0:
+                    df_chunk = df_chunk["Close"]
+                else:
+                    df_chunk = df_chunk[lvl0[0]]
+            elif "Adj Close" in df_chunk.columns:
+                df_chunk = df_chunk["Adj Close"]
+            elif "Close" in df_chunk.columns:
+                df_chunk = df_chunk["Close"]
+
+            if isinstance(df_chunk, pd.Series):
+                df_chunk = df_chunk.to_frame()
+
+            frames.append(df_chunk)
+
+        if not frames:
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, axis=1)
+        # Drop duplicate columns that can appear across chunks
+        combined = combined.loc[:, ~combined.columns.duplicated()]
+        return combined
+
+    # Try to load from cache; if empty or missing, download in chunks
+    data = pd.DataFrame()
+    if cache_file.exists():
+        print(f"Loading cached price data from {cache_file}...")
+        data = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+
+    if data.empty:
+        data = _download_prices(tickers)
+        if data.empty:
+            print("Download returned no data; aborting backtest.")
+            return {
+                "overall_returns": pd.DataFrame(),
+                "bucket_returns": {},
+                "bucket_positions": {},
+                "overall_positions": [],
+                "momentum": pd.DataFrame(),
+                "monthly_prices": pd.DataFrame(),
+                "tickers": [],
+                "bucket_map": bucket_map,
+            }
+        print(f"Saving price data to cache: {cache_file}")
+        data.to_csv(cache_file)
+
+    # Filter out tickers with insufficient data (NaN during backtest period)
+    # Keep only tickers with >80% non-null data
+    valid_tickers = []
+    for ticker in data.columns:
+        non_null_pct = data[ticker].notna().sum() / len(data)
+        if non_null_pct >= 0.8:
+            valid_tickers.append(ticker)
+        else:
+            print(f"  Skipping {ticker} ({non_null_pct:.1%} data available)")
+
+    if not valid_tickers:
+        print("No tickers with sufficient history after filtering.")
+        return {
+            "overall_returns": pd.DataFrame(),
+            "bucket_returns": {},
+            "bucket_positions": {},
+            "overall_positions": [],
+            "momentum": pd.DataFrame(),
+            "monthly_prices": pd.DataFrame(),
+            "tickers": [],
+            "bucket_map": bucket_map,
+        }
+
+    data = data[valid_tickers]
+    print(f"Using {len(valid_tickers)} tickers with sufficient history")
+
+    # Resample to monthly (end of month)
+    print("Resampling to monthly...")
+    monthly = data.resample("ME").last()
+    monthly_returns = monthly.pct_change()
+
+    # Compute momentum per selected score_mode
+    print(f"Computing momentum (mode={score_mode})...")
+    ret_12 = monthly.pct_change(12)
+    ret_9 = monthly.pct_change(9)
+    ret_6 = monthly.pct_change(6)
+    ret_3 = monthly.pct_change(3)
+    ret_1 = monthly.pct_change(1)
+
+    if score_mode == SCORE_MODE_12M_MINUS_1M:
+        momentum = ret_12 - ret_1
+        min_lookback_months = 12
+    elif score_mode == SCORE_MODE_BLEND_6_12:
+        momentum = 0.5 * ret_6 + 0.5 * ret_12
+        min_lookback_months = 12
+    elif score_mode == SCORE_MODE_RW_3_6_9_12:
+        momentum = 0.4 * ret_3 + 0.2 * ret_6 + 0.2 * ret_9 + 0.2 * ret_12
+        min_lookback_months = 12
+    else:
+        raise ValueError(f"Unknown score_mode: {score_mode}")
+
+    if vol_adjusted:
+        print(f"Applying volatility adjustment (lookback={vol_lookback}M)...")
+        # Compute rolling volatility (annualized)
+        rolling_vol = monthly_returns.rolling(vol_lookback).std() * np.sqrt(12)
+        # Divide momentum by volatility (replace inf/nan with 0)
+        momentum_vol_adj = momentum / rolling_vol
+        momentum_vol_adj = momentum_vol_adj.replace([np.inf, -np.inf], 0).fillna(0)
+        momentum = momentum_vol_adj
+
+    # Build bucket list
+    buckets = set(bucket_map.values())
+
+    # Backtest
+    print("Running backtest...")
+    portfolio_returns_overall = []
+    bucket_returns = {b: [] for b in buckets}
+    bucket_positions = {b: [] for b in buckets}
+    overall_positions = []
+    prev_holdings = set()
+    prev_bucket_holdings = {b: set() for b in buckets}
+    prev_bucket_selection: dict[str, str | None] = {b: None for b in buckets}
+
+    start_idx = max(
+        min_lookback_months, vol_lookback if vol_adjusted else min_lookback_months
+    )
+    # Precompute monthly cash return from annual rate
+    cash_ret_monthly = (1 + abs_filter_cash_annual) ** (1 / 12) - 1
+
+    for i in range(start_idx, len(momentum)):
+        date = momentum.index[i]
+        momentum_scores = momentum.iloc[i]
+
+        # Check market absolute momentum if enabled (require full 12M history)
+        market_is_positive = True
+        if market_filter and market_ticker in valid_tickers and i >= 12:
+            price_now = monthly.iloc[i][market_ticker]
+            price_12m_ago = monthly.iloc[i - 12][market_ticker]
+            if pd.notna(price_now) and pd.notna(price_12m_ago) and price_12m_ago != 0:
+                market_momentum = (price_now - price_12m_ago) / price_12m_ago
+                market_is_positive = market_momentum > market_threshold
+
+        # Group by bucket and pick top 1 per bucket (hold only top 1, display top N)
+        selected_symbols = []
+        for bucket in buckets:
+            # Apply market filter: if market negative, only select from defensive bucket
+            if market_filter and not market_is_positive and bucket != defensive_bucket:
+                bucket_positions[bucket].append([])
+                continue
+
+            bucket_symbols = [s for s in valid_tickers if bucket_map.get(s) == bucket]
+            if not bucket_symbols:
+                continue
+            bucket_momentum = momentum_scores[bucket_symbols]
+            # Skip NaN scores and get top N
+            valid_scores = bucket_momentum.dropna()
+            if valid_scores.empty:
+                continue
+            ranked_symbols = valid_scores.sort_values(ascending=False).index.tolist()
+            top_symbols = ranked_symbols[:top_n_per_bucket]
+            bucket_positions[bucket].append(top_symbols)
+
+            # Turnover control: keep current unless new leader beats by rank_gap_threshold
+            leader = top_symbols[0]
+            current = prev_bucket_selection.get(bucket)
+            
+            # Get bucket-specific rank gap (support int or dict)
+            if isinstance(rank_gap_threshold, dict):
+                bucket_gap = rank_gap_threshold.get(bucket, 0)
+            else:
+                bucket_gap = rank_gap_threshold
+            
+            if bucket_gap > 0 and current in ranked_symbols:
+                leader_rank = ranked_symbols.index(leader)
+                current_rank = ranked_symbols.index(current)
+                # replace only if new leader is ahead by at least bucket_gap ranks
+                # (lower rank index = better, so leader_rank must be < current_rank - gap)
+                if leader_rank >= current_rank - bucket_gap:
+                    leader = current
+
+            selected_symbols.append(leader)
+            prev_bucket_selection[bucket] = leader
+
+        if not selected_symbols:
+            continue
+
+        overall_positions.append(selected_symbols)
+
+        # Get next month's returns
+        if i + 1 >= len(monthly):
+            break
+
+        next_date = momentum.index[i + 1]
+
+        # Per-bucket returns with absolute filter and cash fallback
+        bucket_net_returns: list[float] = []
+        bucket_gross_returns: list[float] = []
+
+        for bucket in buckets:
+            bucket_symbols = [
+                s for s in selected_symbols if bucket_map.get(s) == bucket
+            ]
+            if not bucket_symbols:
+                continue
+
+            leader_sym = bucket_symbols[0]
+
+            def _window_ret(symbol: str, months: int) -> float | None:
+                if i < months or pd.isna(monthly.iloc[i][symbol]):
+                    return None
+                past_price = monthly.iloc[i - months][symbol]
+                now_price = monthly.iloc[i][symbol]
+                if pd.isna(past_price) or past_price == 0:
+                    return None
+                return (now_price - past_price) / past_price
+
+            score = None
+            if abs_filter_mode != "none":
+                ret_3 = _window_ret(leader_sym, 3)
+                ret_6 = _window_ret(leader_sym, 6)
+                ret_9 = _window_ret(leader_sym, 9)
+                ret_12 = _window_ret(leader_sym, 12)
+                ret_1 = _window_ret(leader_sym, 1)
+                
+                if abs_filter_mode == "ret_6m" and ret_6 is not None:
+                    score = ret_6
+                elif abs_filter_mode == "ret_12m" and ret_12 is not None:
+                    score = ret_12
+                elif abs_filter_mode == "ret_and" and ret_6 is not None and ret_12 is not None:
+                    score = min(ret_6, ret_12)
+                elif abs_filter_mode == "ret_blend" and ret_6 is not None and ret_12 is not None:
+                    score = 0.6 * ret_12 + 0.5 * ret_6
+                elif abs_filter_mode == SCORE_MODE_RW_3_6_9_12 and all(x is not None for x in [ret_3, ret_6, ret_9, ret_12]):
+                    score = 0.4 * ret_3 + 0.2 * ret_6 + 0.2 * ret_9 + 0.2 * ret_12
+                elif abs_filter_mode == SCORE_MODE_12M_MINUS_1M and ret_12 is not None and ret_1 is not None:
+                    score = ret_12 - ret_1
+                elif abs_filter_mode == SCORE_MODE_BLEND_6_12 and ret_6 is not None and ret_12 is not None:
+                    score = 0.5 * ret_6 + 0.5 * ret_12
+
+            filter_pass = True
+            if score is not None:
+                filter_pass = score > abs_filter_band
+
+            if filter_pass:
+                bucket_ret = monthly_returns.loc[next_date, bucket_symbols]
+                if isinstance(bucket_ret, pd.Series):
+                    bucket_ret_gross = float(bucket_ret.dropna().mean())
+                else:
+                    # bucket_ret is a scalar (single symbol case)
+                    bucket_ret_gross = float(bucket_ret) if not pd.isna(bucket_ret) else 0.0
+
+                # Apply bucket-specific transaction costs
+                curr_bucket_holdings = set(bucket_symbols)
+                bucket_trades = len(
+                    curr_bucket_holdings.symmetric_difference(
+                        prev_bucket_holdings[bucket]
+                    )
+                )
+                bucket_slippage = (
+                    (bucket_trades / len(bucket_symbols)) * (slippage_bps / 10000)
+                    if len(bucket_symbols) > 0
+                    else 0.0
+                )
+                bucket_expense = expense_ratio / 12
+                bucket_ret_net = bucket_ret_gross - bucket_slippage - bucket_expense
+                prev_bucket_holdings[bucket] = curr_bucket_holdings
+            else:
+                # Go to cash/T-bills for this bucket
+                bucket_ret_gross = cash_ret_monthly
+                bucket_slippage = 0.0
+                bucket_expense = 0.0
+                bucket_ret_net = cash_ret_monthly
+                prev_bucket_holdings[bucket] = set()
+
+            bucket_net_returns.append(bucket_ret_net)
+            bucket_gross_returns.append(bucket_ret_gross)
+
+            bucket_returns[bucket].append(
+                {
+                    "date": next_date,
+                    "return": bucket_ret_net,
+                    "gross_return": bucket_ret_gross,
+                    "slippage": bucket_slippage,
+                    "expense": bucket_expense,
+                    "symbols": bucket_symbols,
+                    "filter_pass": filter_pass,
+                }
+            )
+
+        if not bucket_net_returns:
+            continue
+
+        # Overall return = average of bucket net returns
+        portfolio_ret_net = float(np.mean(bucket_net_returns))
+        portfolio_ret_gross = float(np.mean(bucket_gross_returns))
+
+        portfolio_returns_overall.append(
+            {
+                "date": next_date,
+                "return": portfolio_ret_net,
+                "gross_return": portfolio_ret_gross,
+                "slippage": 0.0,  # already accounted in bucket returns
+                "expense": 0.0,
+                "symbols": selected_symbols,
+            }
+        )
+
+    # Convert to DataFrames
+    df_overall = pd.DataFrame(portfolio_returns_overall)
+    if not df_overall.empty:
+        df_overall.set_index("date", inplace=True)
+
+    bucket_dfs = {}
+    for bucket, rets in bucket_returns.items():
+        if rets:
+            df = pd.DataFrame(rets)
+            df.set_index("date", inplace=True)
+            bucket_dfs[bucket] = df
+        else:
+            bucket_dfs[bucket] = pd.DataFrame()
+
+    return {
+        "overall_returns": df_overall,
+        "bucket_returns": bucket_dfs,
+        "bucket_positions": bucket_positions,
+        "overall_positions": overall_positions,
+        "momentum": momentum,
+        "monthly_prices": monthly,
+        "tickers": valid_tickers,
+        "bucket_map": bucket_map,
+    }

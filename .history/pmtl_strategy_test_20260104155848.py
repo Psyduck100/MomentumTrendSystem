@@ -1,0 +1,189 @@
+"""PMTL Strategy: GLD with 100-day and 200-day trading day MA filters vs 12M return filter.
+
+Compare four strategies:
+1. GLD 100-day TRADING MA filter: hold GLD if above 100 trading-day MA, else IEF
+2. GLD 200-day TRADING MA filter: hold GLD if above 200 trading-day MA, else IEF
+3. GLD 12M return filter: hold GLD if 12M > 0, else IEF
+4. GLD benchmark: hold GLD always
+
+Note: 100 trading days ≈ 145 calendar days, 200 trading days ≈ 290 calendar days
+"""
+
+from __future__ import annotations
+import pandas as pd
+import yfinance as yf
+from pathlib import Path
+
+from momentum_program.backtest.metrics import compute_metrics
+
+TICKERS = ["GLD", "IEF"]
+START_DATE = "2005-01-01"
+END_DATE = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+# Trading day conversions: 252 trading days per year / 365 calendar days
+TRADING_TO_CALENDAR = 365 / 252
+TRADING_100_TO_CALENDAR = int(100 * TRADING_TO_CALENDAR)  # ~145 calendar days
+TRADING_200_TO_CALENDAR = int(200 * TRADING_TO_CALENDAR)  # ~290 calendar days
+
+BACKTEST_CACHE = Path("backtest_cache")
+BACKTEST_CACHE.mkdir(exist_ok=True)
+
+def download_prices(tickers: list[str]) -> pd.DataFrame:
+    """Download daily prices."""
+    print(f"Downloading {len(tickers)} tickers from {START_DATE} to {END_DATE}...")
+    data = yf.download(tickers, start=START_DATE, end=END_DATE, progress=False)
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data = data.swaplevel(0, 1, axis=1).sort_index(axis=1)
+        prices = pd.DataFrame()
+        for ticker in tickers:
+            if ticker in data.columns.get_level_values(0):
+                sub = data[ticker]
+                if "Adj Close" in sub.columns:
+                    prices[ticker] = sub["Adj Close"]
+                elif "Close" in sub.columns:
+                    prices[ticker] = sub["Close"]
+    else:
+        prices = pd.DataFrame({tickers[0]: data["Adj Close"]})
+
+    return prices
+
+def backtest_100_trading_ma(prices: pd.DataFrame) -> dict:
+    """Backtest: GLD above 100 trading-day MA -> GLD, else IEF."""
+    prices["GLD_100TMA"] = prices["GLD"].rolling(window=TRADING_100_TO_CALENDAR).mean()
+    monthly = prices.resample("ME").last()
+    
+    positions = []
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        gld_price = monthly.iloc[i]["GLD"]
+        gld_ma = monthly.iloc[i]["GLD_100TMA"]
+        
+        if pd.notna(gld_ma) and gld_price > gld_ma:
+            position = "GLD"
+        else:
+            position = "IEF"
+        
+        positions.append(position)
+        
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i][position]
+            price_next = monthly.iloc[i + 1][position]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def backtest_200_trading_ma(prices: pd.DataFrame) -> dict:
+    """Backtest: GLD above 200 trading-day MA -> GLD, else IEF."""
+    prices["GLD_200TMA"] = prices["GLD"].rolling(window=TRADING_200_TO_CALENDAR).mean()
+    monthly = prices.resample("ME").last()
+    
+    positions = []
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        gld_price = monthly.iloc[i]["GLD"]
+        gld_ma = monthly.iloc[i]["GLD_200TMA"]
+        
+        if pd.notna(gld_ma) and gld_price > gld_ma:
+            position = "GLD"
+        else:
+            position = "IEF"
+        
+        positions.append(position)
+        
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i][position]
+            price_next = monthly.iloc[i + 1][position]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def backtest_12m_return(prices: pd.DataFrame) -> dict:
+    """Backtest: GLD 12M return > 0 -> GLD, else IEF."""
+    monthly = prices.resample("ME").last()
+    
+    positions = []
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        if i >= 12:
+            gld_12m = (monthly.iloc[i]["GLD"] - monthly.iloc[i-12]["GLD"]) / monthly.iloc[i-12]["GLD"]
+        else:
+            gld_12m = 0
+        
+        if gld_12m > 0:
+            position = "GLD"
+        else:
+            position = "IEF"
+        
+        positions.append(position)
+        
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i][position]
+            price_next = monthly.iloc[i + 1][position]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def backtest_gld_only(prices: pd.DataFrame) -> dict:
+    """Benchmark: hold GLD always."""
+    monthly = prices.resample("ME").last()
+    monthly_rets = []
+    
+    for i in range(1, len(monthly)):
+        if i + 1 < len(monthly):
+            price_now = monthly.iloc[i]["GLD"]
+            price_next = monthly.iloc[i + 1]["GLD"]
+            monthly_ret = (price_next - price_now) / price_now if price_now != 0 else 0
+            monthly_rets.append(monthly_ret)
+    
+    return_series = pd.Series(monthly_rets, index=monthly.index[2:len(monthly)])
+    return {"returns": return_series}
+
+def main():
+    prices = download_prices(TICKERS)
+    
+    # Run all strategies
+    ma100_result = backtest_100_trading_ma(prices)
+    ma200_result = backtest_200_trading_ma(prices)
+    ret12m_result = backtest_12m_return(prices)
+    gld_result = backtest_gld_only(prices)
+    
+    ma100_ret = ma100_result["returns"]
+    ma200_ret = ma200_result["returns"]
+    ret12m_ret = ret12m_result["returns"]
+    gld_ret = gld_result["returns"]
+    
+    if all(len(r) > 0 for r in [ma100_ret, ma200_ret, ret12m_ret, gld_ret]):
+        ma100_metrics = compute_metrics(ma100_ret)
+        ma200_metrics = compute_metrics(ma200_ret)
+        ret12m_metrics = compute_metrics(ret12m_ret)
+        gld_metrics = compute_metrics(gld_ret)
+        
+        print("\n" + "="*130)
+        print(f"GLD FILTER COMPARISON ({ma100_ret.index[0].strftime('%Y-%m-%d')} to {ma100_ret.index[-1].strftime('%Y-%m-%d')})")
+        print(f"Note: 100 trading days ≈ {TRADING_100_TO_CALENDAR} cal days; 200 trading days ≈ {TRADING_200_TO_CALENDAR} cal days")
+        print("="*130)
+        print(f"{'Metric':<15} {'100 Trading MA':<20} {'200 Trading MA':<20} {'12M Return':<20} {'GLD (Benchmark)':<20}")
+        print("-"*130)
+        
+        print(f"{'CAGR':<15} {ma100_metrics['cagr']:>18.2%} {ma200_metrics['cagr']:>18.2%} {ret12m_metrics['cagr']:>18.2%} {gld_metrics['cagr']:>18.2%}")
+        print(f"{'Sharpe':<15} {ma100_metrics['sharpe']:>18.3f} {ma200_metrics['sharpe']:>18.3f} {ret12m_metrics['sharpe']:>18.3f} {gld_metrics['sharpe']:>18.3f}")
+        print(f"{'Max DD':<15} {ma100_metrics['max_drawdown']:>18.2%} {ma200_metrics['max_drawdown']:>18.2%} {ret12m_metrics['max_drawdown']:>18.2%} {gld_metrics['max_drawdown']:>18.2%}")
+        print("="*130)
+        
+        print("\nVs GLD Benchmark:")
+        print(f"  100 Trading MA:  {ma100_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ma100_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+        print(f"  200 Trading MA:  {ma200_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ma200_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+        print(f"  12M Return:      {ret12m_metrics['cagr'] - gld_metrics['cagr']:>+.2%} CAGR, Sharpe {ret12m_metrics['sharpe'] - gld_metrics['sharpe']:>+.3f}")
+
+if __name__ == "__main__":
+    main()

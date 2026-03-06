@@ -1,0 +1,281 @@
+================================================================================
+                    PMTL REFACTORING - WHAT'S NEXT?
+================================================================================
+
+You now have a fully refactored, production-ready PMTL momentum strategy system.
+
+Here's what you can do with it:
+
+1. VIEW CURRENT RESULTS
+   ──────────────────────
+   The backtest has already been run with the CASH fallback.
+   
+   View the results:
+     cat pmtl_cash_results.csv
+   
+   View the annual breakdown:
+     cat pmtl_cash_annual_returns.csv
+   
+   Best strategy: EMA 100-day with CASH fallback
+   - CAGR: 23.93%
+   - Sharpe: 1.927
+   - Max Drawdown: -7.20%
+
+
+2. TEST ALTERNATIVE FALLBACKS
+   ─────────────────────────────
+   The system supports multiple defensive assets.
+   
+   To test TB3MS (T-Bills):
+     a) Edit pmtl_config.py, change line 71:
+        ACTIVE_CONFIG = TBILLS_CONFIG
+     b) Run: python pmtl_runner.py
+     c) Results will be in: pmtl_tbills_results.csv
+   
+   To test IEF (Bonds, not recommended):
+     a) Edit pmtl_config.py, change line 71:
+        ACTIVE_CONFIG = IEF_CONFIG
+     b) Run: python pmtl_runner.py
+     c) Results will be in: pmtl_ief_results.csv
+   
+   Note: IEF historically underperformed (-11.54% vs CASH)
+
+
+3. OPTIMIZE WINDOW RANGE
+   ────────────────────────
+   The system can test any window range efficiently.
+   
+   Current test: 100-200 trading days in 10-day increments
+   
+   To test finer granularity (80-180 days, 5-day increments):
+     a) Edit pmtl_config.py, change line 71:
+        ACTIVE_CONFIG = FINE_SWEEP_CONFIG
+     b) Run: python pmtl_runner.py
+     c) Results will show finer optimization
+   
+   Or create a custom config:
+     See PMTL_QUICK_REFERENCE.txt for examples
+
+
+4. COMPARE ALL TESTS
+   ──────────────────
+   After running multiple tests with different configs:
+     python compare_results.py
+   
+   This will show:
+   - Best strategy by fallback
+   - Window comparison
+   - Annual returns analysis
+
+
+5. ADD A NEW FALLBACK STRATEGY
+   ────────────────────────────
+   Example: Test with GDX (junior miners ETF)
+   
+   Steps:
+     a) Edit pmtl_fallback_strategies.py
+     b) Update get_fallback_strategy() factory
+     c) Add to FallbackType enum in pmtl_config.py
+     d) Create a new BacktestConfig preset
+     e) Set ACTIVE_CONFIG to new config
+     f) Run: python pmtl_runner.py
+   
+   Full instructions in: PMTL_QUICK_REFERENCE.txt
+
+
+6. CHANGE OPTIMIZATION METRIC
+   ───────────────────────────
+   Current: Optimizing for maximum CAGR
+   
+   To optimize for Sharpe ratio instead:
+     a) Edit pmtl_config.py
+     b) Find the ACTIVE_CONFIG
+     c) Change: primary_metric=MetricType.SHARPE
+     d) Run: python pmtl_runner.py
+   
+   The results will be sorted by Sharpe instead of CAGR
+   
+   Available metrics: CAGR, SHARPE, MAX_DRAWDOWN, SORTINO, CALMAR
+
+
+7. DEPLOY AS LIVE STRATEGY
+   ────────────────────────
+   The strategy is ready to trade, but follow these steps:
+   
+   a) Paper trade first
+      - Use your broker's paper trading account
+      - Verify that real fills match backtested entry/exit prices
+      - Watch for slippage and execution issues
+      - Run for at least 1 week
+   
+   b) Account for costs
+      - Transaction costs: ~2-3 basis points per trade
+      - Slippage: ~1 basis point typical for GLD
+      - Taxes: May impact realized gains
+      - Adjust backtest expectations accordingly
+   
+   c) Position sizing
+      - Start with 25% of intended final size
+      - Scale up gradually as you gain confidence
+      - Monitor max drawdown in real-time
+      - Have risk management rules
+   
+   d) Monitoring
+      - Track daily MA values vs. latest price
+      - Monitor for regime changes
+      - Check for data quality issues
+      - Keep detailed trading logs
+
+
+8. UNDERSTAND THE ARCHITECTURE
+   ────────────────────────────
+   The refactored system uses design patterns:
+   
+   Strategy Pattern:
+     - FallbackStrategy is abstract
+     - CASH, TB3MS, IEF are concrete implementations
+     - Add new fallbacks without changing backtest code
+   
+   Configuration Pattern:
+     - All parameters in pmtl_config.py
+     - Change tests by editing one line
+     - Preset configs for common scenarios
+   
+   Dependency Injection:
+     - Backtest engine accepts fallback as parameter
+     - Zero coupling between components
+     - Easy to test and modify
+   
+   Factory Pattern:
+     - get_fallback_strategy() creates appropriate fallback
+     - Decouples creation from usage
+     - Easy to add new types
+   
+   See: PMTL_ARCHITECTURE.py for detailed explanation
+
+
+9. DOCUMENTATION
+   ──────────────
+   You have 6 documentation files:
+   
+   INDEX.py
+     - Overview of entire system
+     - Quick start guide
+     - File structure map
+     - 10 most common tasks
+     - FAQ section
+   
+   PMTL_QUICK_REFERENCE.txt
+     - TL;DR reference card
+     - How to switch fallback (2 lines)
+     - How to change windows (3 lines)
+     - How to add new fallback (5 lines)
+   
+   PMTL_USAGE_GUIDE.py
+     - 4 detailed worked examples
+     - Common scenarios
+     - Full workflows
+   
+   PMTL_ARCHITECTURE.py
+     - Design patterns used
+     - Before/after comparison
+     - Extensibility guide
+   
+   REFACTORING_SUMMARY.py
+     - Complete migration guide
+     - What changed and why
+     - All technical details
+   
+   CHECKLIST.txt
+     - Project completion checklist
+     - Verification status
+     - What was tested
+
+
+10. OPTIMIZE FURTHER (Optional)
+    ──────────────────────────
+    Once deployed, consider:
+    
+    a) Bayesian optimization
+       - Search parameter space more efficiently
+       - Use existing engine, new optimizer module
+       - Find potentially better windows
+    
+    b) Regime-aware strategies
+       - Detect when conditions favor GLD vs. bonds
+       - Dynamic fallback switching
+       - Adapt to market environments
+    
+    c) Portfolio integration
+       - Combine with locked US equities (13.28% CAGR)
+       - 60/40 allocation
+       - Quarterly rebalancing
+       - Measure correlation benefits
+    
+    d) Walk-forward analysis
+       - Test on recent data (2024-2025)
+       - Out-of-sample validation
+       - Monitor strategy evolution
+
+
+MOST USEFUL COMMANDS:
+═════════════════════
+
+View latest results:
+  cat pmtl_cash_results.csv
+
+Run full backtest:
+  python pmtl_runner.py
+
+Compare all tests:
+  python compare_results.py
+
+See system overview:
+  python INDEX.py
+
+Get quick reference:
+  cat PMTL_QUICK_REFERENCE.txt
+
+
+DECISION TREE:
+══════════════
+
+Do you want to...
+│
+├─ Deploy as live strategy?
+│  └─ See section 7 above
+│
+├─ Test TB3MS vs CASH?
+│  └─ See section 2 above
+│
+├─ Find optimal window range?
+│  └─ See section 3 above
+│
+├─ Compare all results?
+│  └─ See section 4 above
+│
+├─ Test a new fallback?
+│  └─ See section 5 above
+│
+├─ Understand the code?
+│  └─ See section 8 above
+│
+├─ Learn how to use it?
+│  └─ See section 9 above (documentation)
+│
+└─ Optimize further?
+   └─ See section 10 above
+
+
+RECOMMENDED NEXT STEP:
+══════════════════════
+
+1. Read: INDEX.py (overview of system)
+2. Read: PMTL_QUICK_REFERENCE.txt (quick lookup)
+3. Pick one task from above
+4. Execute that task
+5. Review results
+
+You're ready to go!
+
+================================================================================
