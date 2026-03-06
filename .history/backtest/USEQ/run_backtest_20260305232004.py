@@ -7,9 +7,7 @@ import sys
 import pandas as pd
 
 if __name__ == "__main__" and __package__ is None:
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
@@ -44,13 +42,9 @@ def run_strategy_backtest(cfg: BacktestConfig) -> dict:
         start_date=cfg.start_date,
         rebalance_freq=cfg.rebalance_freq,
     )
-    abs_cfg = AbsFilterConfig(
-        kind="ret_12m_pos", trading_days_per_month=strategy_cfg.trading_days_per_month
-    )
+    abs_cfg = AbsFilterConfig(kind="ret_12m_pos", trading_days_per_month=strategy_cfg.trading_days_per_month)
 
-    result = run_backtest(
-        strategy_cfg, abs_cfg, transaction_cost_bps=cfg.transaction_cost_bps
-    )
+    result = run_backtest(strategy_cfg, abs_cfg, transaction_cost_bps=cfg.transaction_cost_bps)
 
     bt = result["bt"]
     strategy_returns = bt["ret"].copy()
@@ -58,17 +52,10 @@ def run_strategy_backtest(cfg: BacktestConfig) -> dict:
 
     prices = result["prices"]
     if cfg.benchmark in prices.columns:
-        benchmark_returns = (
-            prices[cfg.benchmark].pct_change().reindex(strategy_returns.index).dropna()
-        )
+        benchmark_returns = prices[cfg.benchmark].pct_change().reindex(strategy_returns.index).dropna()
     else:
         bench_px = USEQ.download_prices([cfg.benchmark], start_date=cfg.start_date)
-        benchmark_returns = (
-            bench_px[cfg.benchmark]
-            .pct_change()
-            .reindex(strategy_returns.index)
-            .dropna()
-        )
+        benchmark_returns = bench_px[cfg.benchmark].pct_change().reindex(strategy_returns.index).dropna()
 
     base_metrics = compute_return_metrics(strategy_returns, positions=in_position)
     rel_metrics = compute_relative_metrics(strategy_returns, benchmark_returns)
