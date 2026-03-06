@@ -29,7 +29,7 @@ from backtest.common.metrics import (
 
 @dataclass(frozen=True)
 class BacktestConfig:
-    universe: tuple[str, ...] = ("SPY", "QQQ", "IVE")
+    universe: tuple[str, ...] = ("VTI", "IWF", "IWD", "QQQ", "SPY")
     defensive_symbol: str = "IEF"
     start_date: str = "2000-01-01"
     rebalance_freq: str = "M"
