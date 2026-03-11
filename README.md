@@ -1,5 +1,5 @@
 # Momentum Program (Multi-Model)
-
+<img width="2160" height="1260" alt="PMTL vs SPY equity curve" src="https://github.com/user-attachments/assets/36934329-d2d4-4fe4-af4a-4994dcc5252d" />
 A multi-model momentum research and live-signal project covering CRYP, PMTL, USEQ, and SECTOR170.
 
 # Motivation
@@ -195,3 +195,4 @@ backtesting final params for such model and optimizing etf universe
 locked in final etf universe and params for SECTOR170 model
 organizing models for git repo push
 trimmed many backtest files before pushing to repo, kept most basic ones for demonstration as file directory was too messy
+
